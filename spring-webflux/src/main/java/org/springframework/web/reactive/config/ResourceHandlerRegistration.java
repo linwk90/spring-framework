@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *      http://www.apache.org/licenses/LICENSE-2.0
+ *      https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -47,6 +47,8 @@ public class ResourceHandlerRegistration {
 
 	@Nullable
 	private ResourceChainRegistration resourceChainRegistration;
+
+	private boolean useLastModified = true;
 
 
 	/**
@@ -91,6 +93,18 @@ public class ResourceHandlerRegistration {
 	 */
 	public ResourceHandlerRegistration setCacheControl(CacheControl cacheControl) {
 		this.cacheControl = cacheControl;
+		return this;
+	}
+
+	/**
+	 * Set whether the {@link Resource#lastModified()} information should be used to drive HTTP responses.
+	 * <p>This configuration is set to {@code true} by default.
+	 * @param useLastModified whether the "last modified" resource information should be used.
+	 * @return the same {@link ResourceHandlerRegistration} instance, for chained method invocation
+	 * @since 5.3
+	 */
+	public ResourceHandlerRegistration setUseLastModified(boolean useLastModified) {
+		this.useLastModified = useLastModified;
 		return this;
 	}
 
@@ -153,6 +167,7 @@ public class ResourceHandlerRegistration {
 		if (this.cacheControl != null) {
 			handler.setCacheControl(this.cacheControl);
 		}
+		handler.setUseLastModified(this.useLastModified);
 		return handler;
 	}
 

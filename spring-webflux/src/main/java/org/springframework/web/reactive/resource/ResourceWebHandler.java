@@ -1,11 +1,11 @@
 /*
- * Copyright 2002-2018 the original author or authors.
+ * Copyright 2002-2020 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *      http://www.apache.org/licenses/LICENSE-2.0
+ *      https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -88,8 +88,6 @@ public class ResourceWebHandler implements WebHandler, InitializingBean {
 
 	private static final Set<HttpMethod> SUPPORTED_METHODS = EnumSet.of(HttpMethod.GET, HttpMethod.HEAD);
 
-	private static final Exception NOT_FOUND_EXCEPTION = new ResponseStatusException(HttpStatus.NOT_FOUND);
-
 	private static final Log logger = LogFactory.getLog(ResourceWebHandler.class);
 
 
@@ -115,6 +113,8 @@ public class ResourceWebHandler implements WebHandler, InitializingBean {
 
 	@Nullable
 	private ResourceLoader resourceLoader;
+
+	private boolean useLastModified = true;
 
 
 	/**
@@ -239,6 +239,27 @@ public class ResourceWebHandler implements WebHandler, InitializingBean {
 		this.resourceLoader = resourceLoader;
 	}
 
+	/**
+	 * Return whether the {@link Resource#lastModified()} information is used
+	 * to drive HTTP responses when serving static resources.
+	 * @since 5.3
+	 */
+	public boolean isUseLastModified() {
+		return this.useLastModified;
+	}
+
+	/**
+	 * Set whether we should look at the {@link Resource#lastModified()}
+	 * when serving resources and use this information to drive {@code "Last-Modified"}
+	 * HTTP response headers.
+	 * <p>This option is enabled by default and should be turned off if the metadata of
+	 * the static files should be ignored.
+	 * @param useLastModified whether to use the resource last-modified information.
+	 * @since 5.3
+	 */
+	public void setUseLastModified(boolean useLastModified) {
+		this.useLastModified = useLastModified;
+	}
 
 	@Override
 	public void afterPropertiesSet() throws Exception {
@@ -324,7 +345,7 @@ public class ResourceWebHandler implements WebHandler, InitializingBean {
 		return getResource(exchange)
 				.switchIfEmpty(Mono.defer(() -> {
 					logger.debug(exchange.getLogPrefix() + "Resource not found");
-					return Mono.error(NOT_FOUND_EXCEPTION);
+					return Mono.error(new ResponseStatusException(HttpStatus.NOT_FOUND));
 				}))
 				.flatMap(resource -> {
 					try {
@@ -341,30 +362,22 @@ public class ResourceWebHandler implements WebHandler, InitializingBean {
 						}
 
 						// Header phase
-						if (exchange.checkNotModified(Instant.ofEpochMilli(resource.lastModified()))) {
+						if (isUseLastModified() && exchange.checkNotModified(Instant.ofEpochMilli(resource.lastModified()))) {
 							logger.trace(exchange.getLogPrefix() + "Resource not modified");
 							return Mono.empty();
 						}
 
 						// Apply cache settings, if any
-						if (getCacheControl() != null) {
-							String value = getCacheControl().getHeaderValue();
-							if (value != null) {
-								exchange.getResponse().getHeaders().setCacheControl(value);
-							}
+						CacheControl cacheControl = getCacheControl();
+						if (cacheControl != null) {
+							exchange.getResponse().getHeaders().setCacheControl(cacheControl);
 						}
 
 						// Check the media type for the resource
 						MediaType mediaType = MediaTypeFactory.getMediaType(resource).orElse(null);
+						setHeaders(exchange, resource, mediaType);
 
 						// Content phase
-						if (HttpMethod.HEAD.matches(exchange.getRequest().getMethodValue())) {
-							setHeaders(exchange, resource, mediaType);
-							exchange.getResponse().getHeaders().set(HttpHeaders.ACCEPT_RANGES, "bytes");
-							return Mono.empty();
-						}
-
-						setHeaders(exchange, resource, mediaType);
 						ResourceHttpMessageWriter writer = getResourceHttpMessageWriter();
 						Assert.state(writer != null, "No ResourceHttpMessageWriter");
 						return writer.write(Mono.just(resource),
@@ -472,7 +485,10 @@ public class ResourceWebHandler implements WebHandler, InitializingBean {
 					return true;
 				}
 			}
-			catch (IllegalArgumentException | UnsupportedEncodingException ex) {
+			catch (IllegalArgumentException ex) {
+				// May not be possible to decode...
+			}
+			catch (UnsupportedEncodingException ex) {
 				// Should never happen...
 			}
 		}
@@ -496,22 +512,25 @@ public class ResourceWebHandler implements WebHandler, InitializingBean {
 	 */
 	protected boolean isInvalidPath(String path) {
 		if (path.contains("WEB-INF") || path.contains("META-INF")) {
-			logger.warn("Path contains \"WEB-INF\" or \"META-INF\".");
+			if (logger.isWarnEnabled()) {
+				logger.warn("Path with \"WEB-INF\" or \"META-INF\": [" + path + "]");
+			}
 			return true;
 		}
 		if (path.contains(":/")) {
 			String relativePath = (path.charAt(0) == '/' ? path.substring(1) : path);
 			if (ResourceUtils.isUrl(relativePath) || relativePath.startsWith("url:")) {
-				logger.warn("Path represents URL or has \"url:\" prefix.");
+				if (logger.isWarnEnabled()) {
+					logger.warn("Path represents URL or has \"url:\" prefix: [" + path + "]");
+				}
 				return true;
 			}
 		}
-		if (path.contains("..")) {
-			path = StringUtils.cleanPath(path);
-			if (path.contains("../")) {
-				logger.warn("Path contains \"../\" after call to StringUtils#cleanPath.");
-				return true;
+		if (path.contains("..") && StringUtils.cleanPath(path).contains("../")) {
+			if (logger.isWarnEnabled()) {
+				logger.warn("Path contains \"../\" after call to StringUtils#cleanPath: [" + path + "]");
 			}
+			return true;
 		}
 		return false;
 	}
@@ -533,6 +552,7 @@ public class ResourceWebHandler implements WebHandler, InitializingBean {
 		if (mediaType != null) {
 			headers.setContentType(mediaType);
 		}
+
 		if (resource instanceof HttpResource) {
 			HttpHeaders resourceHeaders = ((HttpResource) resource).getResponseHeaders();
 			exchange.getResponse().getHeaders().putAll(resourceHeaders);
